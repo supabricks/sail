@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use datafusion::optimizer::{Analyzer, AnalyzerRule, Optimizer, OptimizerRule};
 
+mod char_comparisons;
 mod lateral_join;
 mod resolve_lambda_variables;
 
+use char_comparisons::CharComparisons;
 use lateral_join::DecorrelateLateralProjection;
 use resolve_lambda_variables::ResolveLambdaVariables;
 
@@ -16,7 +18,7 @@ pub fn default_analyzer_rules() -> Vec<Arc<dyn AnalyzerRule + Send + Sync>> {
         rules: built_in_rules,
     } = Analyzer::default();
     let mut rules: Vec<Arc<dyn AnalyzerRule + Send + Sync>> =
-        vec![Arc::new(ResolveLambdaVariables)];
+        vec![Arc::new(ResolveLambdaVariables), Arc::new(CharComparisons)];
     rules.extend(built_in_rules);
     rules
 }
