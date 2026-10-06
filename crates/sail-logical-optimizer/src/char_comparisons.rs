@@ -4,7 +4,6 @@
 //! stored bytes (including spaces) and ordinary STRING/LIKE/cast behavior. Only
 //! CHAR/CHAR and CHAR/string-literal comparisons require length equalization.
 use std::collections::HashMap;
-use std::ops::Not;
 
 use datafusion::functions::unicode::expr_fn::rpad;
 use datafusion::optimizer::AnalyzerRule;
@@ -12,11 +11,10 @@ use datafusion::optimizer::simplify_expressions::ExprSimplifier;
 use datafusion_common::config::ConfigOptions;
 use datafusion_common::tree_node::{Transformed, TreeNode};
 use datafusion_common::{DFSchema, Result, ScalarValue};
-use datafusion_expr::Volatility;
 use datafusion_expr::expr_rewriter::NamePreserver;
 use datafusion_expr::simplify::SimplifyContextBuilder;
 use datafusion_expr::utils::merge_schema;
-use datafusion_expr::{BinaryExpr, Expr, LogicalPlan, Operator, lit};
+use datafusion_expr::{BinaryExpr, Expr, LogicalPlan, Operator, Volatility, lit};
 
 const RAW_TYPE: &str = "__CHAR_VARCHAR_TYPE_STRING";
 
@@ -33,7 +31,7 @@ fn field_width(field: &datafusion::arrow::datatypes::Field) -> Option<i64> {
     }
     let raw = field.metadata().get(RAW_TYPE)?;
     let n = raw.strip_prefix("char(")?.strip_suffix(')')?.parse().ok()?;
-    (n > 0 && n <= 10_485_760).then_some(n)
+    (1..=10_485_760).contains(&n).then_some(n)
 }
 
 fn char_width(expr: &Expr, schema: &DFSchema) -> Option<i64> {
@@ -78,10 +76,10 @@ fn foldable(expr: &Expr) -> bool {
 fn fold_constant(expr: &Expr) -> Expr {
     if foldable(expr) {
         let context = SimplifyContextBuilder::default().build();
-        if let Ok(result) = ExprSimplifier::new(context).simplify(expr.clone()) {
-            if literal_width(&result).is_some() {
-                return result;
-            }
+        if let Ok(result) = ExprSimplifier::new(context).simplify(expr.clone())
+            && literal_width(&result).is_some()
+        {
+            return result;
         }
     }
     expr.clone()
@@ -168,20 +166,6 @@ fn rewrite(expr: Expr, schema: &DFSchema) -> Result<Transformed<Expr>> {
                     result.list = folded.into_iter().map(|e| pad(e, width)).collect();
                     return Ok(Transformed::yes(Expr::InList(result)));
                 }
-            }
-        }
-        Expr::Between(b) => {
-            let low = comparison(*b.expr.clone(), Operator::GtEq, *b.low.clone(), schema);
-            let high = comparison(*b.expr.clone(), Operator::LtEq, *b.high.clone(), schema);
-            if low.is_some() || high.is_some() {
-                let result = low
-                    .unwrap_or_else(|| b.expr.as_ref().clone().gt_eq(*b.low.clone()))
-                    .and(high.unwrap_or_else(|| b.expr.as_ref().clone().lt_eq(*b.high.clone())));
-                return Ok(Transformed::yes(if b.negated {
-                    result.not()
-                } else {
-                    result
-                }));
             }
         }
         _ => {}

@@ -80,6 +80,14 @@ def test_imported_char_comparisons(spark, tmp_path):
             (2, None, None, None, True, None, None),
             (3, False, False, None, True, True, False),
         ]
+        # Spark expands BETWEEN after CHAR padding analysis: the raw padded
+        # value exceeds an equal unpadded upper bound.
+        assert rows("SELECT c BETWEEN 'x' AND 'x',c <= 'x' FROM imported_char ORDER BY id") == [
+            (False, True),
+            (False, True),
+            (None, None),
+            (False, False),
+        ]
         assert rows("SELECT a.id FROM imported_char a JOIN imported_char b ON a.c=b.d ORDER BY a.id") == [
             (0,),
             (1,),
