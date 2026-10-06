@@ -4,6 +4,7 @@
 //! stored bytes (including spaces) and ordinary STRING/LIKE/cast behavior. Only
 //! CHAR/CHAR and CHAR/string-literal comparisons require length equalization.
 use std::collections::HashMap;
+use std::ops::Not;
 
 use datafusion::functions::unicode::expr_fn::rpad;
 use datafusion::optimizer::AnalyzerRule;
@@ -167,6 +168,22 @@ fn rewrite(expr: Expr, schema: &DFSchema) -> Result<Transformed<Expr>> {
                     return Ok(Transformed::yes(Expr::InList(result)));
                 }
             }
+        }
+        Expr::Between(b) => {
+            // Preserve Sail's manual expansion (a DataFusion BETWEEN workaround)
+            // but do it after CHAR operand analysis, as Spark does. The new
+            // comparisons must not receive a second CHAR padding pass.
+            let result = b
+                .expr
+                .as_ref()
+                .clone()
+                .gt_eq(*b.low.clone())
+                .and(b.expr.as_ref().clone().lt_eq(*b.high.clone()));
+            return Ok(Transformed::yes(if b.negated {
+                result.not()
+            } else {
+                result
+            }));
         }
         _ => {}
     }
