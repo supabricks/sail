@@ -144,27 +144,14 @@ impl PlanResolver<'_> {
         let low = self.resolve_expression(low, schema, state).await?;
         let high = self.resolve_expression(high, schema, state).await?;
 
-        // DataFusion's BETWEEN operator has a bug, so we construct the expression manually.
-        let greater_eq = expr::Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(expr.clone()),
-            Operator::GtEq,
-            Box::new(low),
-        ));
-        let less_eq = expr::Expr::BinaryExpr(BinaryExpr::new(
+        // Keep BETWEEN distinct until CHAR padding analysis. Spark expands it
+        // afterward, so its bounds do not receive binary-comparison padding.
+        let between_expr = expr::Expr::Between(expr::Between::new(
             Box::new(expr),
-            Operator::LtEq,
+            negated,
+            Box::new(low),
             Box::new(high),
         ));
-        let between_expr = expr::Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(greater_eq),
-            Operator::And,
-            Box::new(less_eq),
-        ));
-        let between_expr = if negated {
-            expr::Expr::Not(Box::new(between_expr))
-        } else {
-            between_expr
-        };
         Ok(NamedExpr::new(vec!["between".to_string()], between_expr))
     }
 
