@@ -3,10 +3,12 @@ use std::sync::Arc;
 use datafusion::optimizer::{Analyzer, AnalyzerRule, Optimizer, OptimizerRule};
 
 mod char_comparisons;
+mod correlated_char;
 mod lateral_join;
 mod resolve_lambda_variables;
 
 use char_comparisons::CharComparisons;
+use correlated_char::MaterializeCorrelatedCharKeys;
 use lateral_join::DecorrelateLateralProjection;
 use resolve_lambda_variables::ResolveLambdaVariables;
 
@@ -31,8 +33,10 @@ pub fn default_optimizer_rules() -> Vec<Arc<dyn OptimizerRule + Send + Sync>> {
     // Projection expressions (e.g. `LATERAL (SELECT t1.a + 1)`), rewriting
     // it into a CrossJoin + Projection. The remaining complex cases (OuterRef
     // in Filter/Aggregate) are left for DataFusion's `DecorrelateLateralJoin`.
-    let mut custom: Vec<Arc<dyn OptimizerRule + Send + Sync>> =
-        vec![Arc::new(DecorrelateLateralProjection::new())];
+    let mut custom: Vec<Arc<dyn OptimizerRule + Send + Sync>> = vec![
+        Arc::new(DecorrelateLateralProjection::new()),
+        Arc::new(MaterializeCorrelatedCharKeys),
+    ];
     custom.extend(rules);
     // `ResolveLambdaVariables` must run after the built-in rules: constant
     // folding can change the type or nullability of higher-order function
