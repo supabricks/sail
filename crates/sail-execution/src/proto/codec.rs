@@ -195,9 +195,11 @@ use sail_function::scalar::math::spark_bin::SparkBin;
 use sail_function::scalar::math::spark_bround::SparkBRound;
 use sail_function::scalar::math::spark_ceil_floor::{SparkCeil, SparkFloor};
 use sail_function::scalar::math::spark_conv::SparkConv;
+use sail_function::scalar::math::spark_decimal::{DecimalOp, SparkDecimal};
 use sail_function::scalar::math::spark_div::SparkIntervalDiv;
 use sail_function::scalar::math::spark_negative::SparkNegative;
 use sail_function::scalar::math::spark_pmod::SparkPmod;
+use sail_function::scalar::math::spark_round::SparkRound;
 use sail_function::scalar::math::spark_signum::SparkSignum;
 use sail_function::scalar::math::spark_try_add::SparkTryAdd;
 use sail_function::scalar::math::spark_try_div::SparkTryDiv;
@@ -2786,6 +2788,24 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             UdfKind::SparkToChar(r#gen::SparkToCharUdf { ansi_mode }) => {
                 return Ok(Arc::new(ScalarUDF::from(SparkToChar::new(ansi_mode))));
             }
+            UdfKind::SparkDecimal(r#gen::SparkDecimalUdf {
+                operation,
+                ansi_mode,
+                allow_precision_loss,
+            }) => {
+                let op = match operation.as_str() {
+                    "spark_decimal_add" => DecimalOp::Add,
+                    "spark_decimal_subtract" => DecimalOp::Subtract,
+                    "spark_decimal_multiply" => DecimalOp::Multiply,
+                    "spark_decimal_divide" => DecimalOp::Divide,
+                    _ => return plan_err!("invalid decimal operation: {operation}"),
+                };
+                return Ok(Arc::new(ScalarUDF::from(SparkDecimal::new(
+                    op,
+                    ansi_mode,
+                    allow_precision_loss,
+                ))));
+            }
             UdfKind::SparkAbs(r#gen::SparkAbsUdf { ansi_mode }) => {
                 return Ok(Arc::new(ScalarUDF::from(SparkAbs::new(ansi_mode))));
             }
@@ -2913,6 +2933,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             "schema_of_csv" => Ok(Arc::new(ScalarUDF::from(SparkSchemaOfCsv::new()))),
             "xpath" => Ok(Arc::new(ScalarUDF::from(Xpath::new()))),
             "spark_base64" | "base64" => Ok(Arc::new(ScalarUDF::from(SparkBase64::new()))),
+            "spark_round" => Ok(Arc::new(ScalarUDF::from(SparkRound::default()))),
             "spark_bround" | "bround" => Ok(Arc::new(ScalarUDF::from(SparkBRound::new()))),
             "spark_interval_div" => Ok(Arc::new(ScalarUDF::from(SparkIntervalDiv::new()))),
             "spark_unbase64" | "unbase64" => Ok(Arc::new(ScalarUDF::from(SparkUnbase64::new()))),
@@ -3068,6 +3089,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             || node_inner.is::<SparkBitGet>()
             || node_inner.is::<SparkBitwiseNot>()
             || node_inner.is::<SparkBRound>()
+            || node_inner.is::<SparkRound>()
             || node_inner.is::<SparkCalendarInterval>()
             || node_inner.is::<SparkConcat>()
             || node_inner.is::<SparkConv>()
@@ -3299,6 +3321,12 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
         } else if let Some(func) = node.inner().downcast_ref::<SparkToChar>() {
             let ansi_mode = func.ansi_mode();
             UdfKind::SparkToChar(r#gen::SparkToCharUdf { ansi_mode })
+        } else if let Some(func) = node.inner().downcast_ref::<SparkDecimal>() {
+            UdfKind::SparkDecimal(r#gen::SparkDecimalUdf {
+                operation: func.name().to_string(),
+                ansi_mode: func.ansi_mode,
+                allow_precision_loss: func.allow_precision_loss,
+            })
         } else if let Some(func) = node.inner().downcast_ref::<SparkAbs>() {
             let ansi_mode = func.ansi_mode();
             UdfKind::SparkAbs(r#gen::SparkAbsUdf { ansi_mode })
@@ -4984,6 +5012,27 @@ mod tests {
         let decoded = codec.try_decode_udaf("avg", &bytes)?;
         assert!(decoded.inner().is::<SparkAvg>());
         assert_eq!(decoded.as_ref(), udf.as_ref());
+        Ok(())
+    }
+
+    #[test]
+    fn test_round_trip_spark_decimal_arithmetic() -> Result<()> {
+        for op in [
+            DecimalOp::Add,
+            DecimalOp::Subtract,
+            DecimalOp::Multiply,
+            DecimalOp::Divide,
+        ] {
+            for ansi in [false, true] {
+                for loss in [false, true] {
+                    let udf = ScalarUDF::from(SparkDecimal::new(op, ansi, loss));
+                    let decoded = round_trip_udf(udf.clone())?;
+                    assert_eq!(decoded.as_ref(), &udf);
+                }
+            }
+        }
+        let udf = ScalarUDF::from(SparkRound::default());
+        assert_eq!(round_trip_udf(udf.clone())?.as_ref(), &udf);
         Ok(())
     }
 

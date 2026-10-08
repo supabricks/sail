@@ -22,9 +22,11 @@ use sail_function::scalar::math::spark_bin::SparkBin;
 use sail_function::scalar::math::spark_bround::SparkBRound;
 use sail_function::scalar::math::spark_ceil_floor::{SparkCeil, SparkFloor};
 use sail_function::scalar::math::spark_conv::SparkConv;
+use sail_function::scalar::math::spark_decimal::{DecimalOp, SparkDecimal};
 use sail_function::scalar::math::spark_div::SparkIntervalDiv;
 use sail_function::scalar::math::spark_negative::SparkNegative;
 use sail_function::scalar::math::spark_pmod::SparkPmod;
+use sail_function::scalar::math::spark_round::SparkRound;
 use sail_function::scalar::math::spark_signum::SparkSignum;
 use sail_function::scalar::math::spark_try_add::SparkTryAdd;
 use sail_function::scalar::math::spark_try_div::SparkTryDiv;
@@ -38,6 +40,51 @@ use sail_function::scalar::spark_to_string::{SparkToLargeUtf8, SparkToUtf8, Spar
 
 use crate::error::{PlanError, PlanResult};
 use crate::function::common::{ScalarFunction, ScalarFunctionInput};
+
+fn decimal_operand(expr: &Expr, data_type: &DataType, other_type: &DataType) -> Option<Expr> {
+    let precision = match data_type {
+        DataType::Decimal128(_, _) => return Some(expr.clone()),
+        DataType::Null => return Some(cast(expr.clone(), other_type.clone())),
+        DataType::Int8 => 3,
+        DataType::Int16 => 5,
+        DataType::Int32 => 10,
+        DataType::Int64 => 20,
+        _ => return None,
+    };
+    let literal = match expr {
+        Expr::Literal(ScalarValue::Int8(Some(v)), _) => Some(i128::from(*v)),
+        Expr::Literal(ScalarValue::Int16(Some(v)), _) => Some(i128::from(*v)),
+        Expr::Literal(ScalarValue::Int32(Some(v)), _) => Some(i128::from(*v)),
+        Expr::Literal(ScalarValue::Int64(Some(v)), _) => Some(i128::from(*v)),
+        _ => None,
+    };
+    let precision = literal.map_or(precision, |v| v.unsigned_abs().to_string().len() as u8);
+    Some(cast(expr.clone(), DataType::Decimal128(precision, 0)))
+}
+
+fn decimal_arithmetic(
+    left: &Expr,
+    right: &Expr,
+    schema: &DFSchemaRef,
+    op: DecimalOp,
+    config: &crate::config::PlanConfig,
+) -> Option<Expr> {
+    let (lt, rt) = (left.get_type(schema).ok()?, right.get_type(schema).ok()?);
+    if !matches!(lt, DataType::Decimal128(_, _)) && !matches!(rt, DataType::Decimal128(_, _)) {
+        return None;
+    }
+    Some(
+        ScalarUDF::from(SparkDecimal::new(
+            op,
+            config.ansi_mode,
+            config.decimal_allow_precision_loss,
+        ))
+        .call(vec![
+            decimal_operand(left, &lt, &rt)?,
+            decimal_operand(right, &rt, &lt)?,
+        ]),
+    )
+}
 
 fn add_day_time_interval_to_string(
     string: Expr,
@@ -88,6 +135,16 @@ fn spark_plus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         Ok(arguments.one()?)
     } else {
         let (left, right) = arguments.two()?;
+        if let Some(expr) = decimal_arithmetic(
+            &left,
+            &right,
+            function_context.schema,
+            DecimalOp::Add,
+            function_context.plan_config,
+        ) {
+            return Ok(expr);
+        }
+
         let (left_type, right_type) = (
             left.get_type(function_context.schema),
             right.get_type(function_context.schema),
@@ -165,6 +222,16 @@ fn spark_minus(input: ScalarFunctionInput) -> PlanResult<Expr> {
         ))
     } else {
         let (left, right) = arguments.two()?;
+        if let Some(expr) = decimal_arithmetic(
+            &left,
+            &right,
+            function_context.schema,
+            DecimalOp::Subtract,
+            function_context.plan_config,
+        ) {
+            return Ok(expr);
+        }
+
         let (left_type, right_type) = (
             left.get_type(function_context.schema),
             right.get_type(function_context.schema),
@@ -205,6 +272,16 @@ fn spark_multiply(input: ScalarFunctionInput) -> PlanResult<Expr> {
     } = input;
 
     let (left, right) = arguments.two()?;
+    if let Some(expr) = decimal_arithmetic(
+        &left,
+        &right,
+        function_context.schema,
+        DecimalOp::Multiply,
+        function_context.plan_config,
+    ) {
+        return Ok(expr);
+    }
+
     let (left_type, right_type) = (
         left.get_type(function_context.schema),
         right.get_type(function_context.schema),
@@ -332,6 +409,15 @@ fn spark_divide(input: ScalarFunctionInput) -> PlanResult<Expr> {
     } = input;
 
     let (dividend, divisor) = arguments.two()?;
+    if let Some(expr) = decimal_arithmetic(
+        &dividend,
+        &divisor,
+        function_context.schema,
+        DecimalOp::Divide,
+        function_context.plan_config,
+    ) {
+        return Ok(expr);
+    }
 
     // Plan-time check for literal zero divisors (fast path, better error UX).
     if is_zero_literal(&divisor) {
@@ -455,6 +541,18 @@ fn hypot(expr1: Expr, expr2: Expr) -> Expr {
 
 fn positive(expr: Expr) -> Expr {
     expr
+}
+
+fn spark_round(input: ScalarFunctionInput) -> PlanResult<Expr> {
+    use datafusion::optimizer::simplify_expressions::ExprSimplifier;
+    use datafusion_expr::simplify::SimplifyContextBuilder;
+    let mut args = input.arguments;
+    if let Some(scale) = args.get_mut(1) {
+        // Spark accepts foldable scale expressions, not just literal syntax.
+        let context = SimplifyContextBuilder::default().build();
+        *scale = ExprSimplifier::new(context).simplify(scale.clone())?;
+    }
+    Ok(ScalarUDF::from(SparkRound::default()).call(args))
 }
 
 fn rint(expr: Expr) -> Expr {
@@ -765,7 +863,7 @@ pub(super) fn list_built_in_math_functions() -> Vec<(&'static str, ScalarFunctio
         ("randn", F::udf(Randn::new())),
         ("random", F::udf(Random::new())),
         ("rint", F::unary(rint)),
-        ("round", F::var_arg(expr_fn::round)),
+        ("round", F::custom(spark_round)),
         ("sec", F::unary(double(|arg| lit(1.0) / expr_fn::cos(arg)))),
         ("sign", F::udf(SparkSignum::new())),
         ("signum", F::udf(SparkSignum::new())),
