@@ -131,7 +131,16 @@ impl OptimizerRule for MaterializeCorrelatedCharKeys {
             return Ok(Transformed::no(plan));
         }
         let mut computed = original.clone();
-        computed.extend(keys.into_iter().map(|(expr, name)| expr.alias(name)));
+        computed.extend(keys.into_iter().map(|(expr, name)| match expr {
+            // Keep the cast's metadata on the outermost alias: the physical
+            // projection only reads that alias's metadata, not nested aliases.
+            Expr::Alias(mut alias) => {
+                alias.name = name;
+                alias.relation = None;
+                Expr::Alias(alias)
+            }
+            expr => expr.alias(name),
+        }));
         let input =
             LogicalPlan::Projection(Projection::try_new(computed, Arc::clone(&filter.input))?);
         let filtered = LogicalPlan::Filter(Filter::try_new(predicate, Arc::new(input))?);
@@ -242,6 +251,34 @@ mod tests {
                 .unwrap();
             assert_eq!(result.transformed, expected);
             assert_eq!(result.data.schema(), plan.schema());
+            if expected {
+                let LogicalPlan::Projection(restore) = result.data else {
+                    panic!("missing restore")
+                };
+                let LogicalPlan::Filter(filter) = restore.input.as_ref() else {
+                    panic!("missing filter")
+                };
+                let LogicalPlan::Projection(compute) = filter.input.as_ref() else {
+                    panic!("missing computed key")
+                };
+                let Expr::Alias(alias) = &compute.expr[1] else {
+                    panic!("missing key alias")
+                };
+                assert!(
+                    matches!(alias.expr.as_ref(), Expr::Cast(_)),
+                    "do not nest the metadata alias"
+                );
+                assert_eq!(
+                    alias
+                        .metadata
+                        .as_ref()
+                        .unwrap()
+                        .inner()
+                        .get("__CHAR_VARCHAR_TYPE_STRING")
+                        .unwrap(),
+                    "string"
+                );
+            }
         }
     }
 
