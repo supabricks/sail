@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion::functions_aggregate::{average, bit_and_or_xor, bool_and_or, count, min_max, sum};
+use datafusion::functions_aggregate::{bit_and_or_xor, bool_and_or, count, min_max, sum};
 use datafusion_common::arrow::datatypes::DataType;
 use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion_common::{
@@ -16,6 +16,7 @@ use datafusion_expr::{
 use datafusion_spark::function::aggregate::try_sum::SparkTrySum;
 use sail_common::spec;
 use sail_common_datafusion::utils::items::ItemTaker;
+use sail_function::aggregate::average;
 use sail_function::aggregate::try_avg::TryAvgFunction;
 use sail_function::scalar::explode::Explode;
 use sail_logical_plan::monotonic_id::MonotonicIdNode;

@@ -179,6 +179,7 @@ datafusion-datasource-parquet = { version = "54.1.0" }
 datafusion-expr = { version = "54.1.0", default-features = false }
 datafusion-expr-common = { version = "54.1.0" }
 datafusion-proto = { version = "54.1.0" }
+datafusion-functions-aggregate-common = { version = "54.1.0" }
 datafusion-functions = { version = "54.1.0" }
 datafusion-functions-nested = { version = "54.1.0", default-features = false }
 datafusion-physical-expr = { version = "54.1.0" }
