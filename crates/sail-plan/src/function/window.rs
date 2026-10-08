@@ -4,7 +4,7 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field};
 use datafusion::functions_aggregate::{
     approx_distinct, approx_percentile_cont, array_agg, bit_and_or_xor, bool_and_or, correlation,
-    count, covariance, grouping, median, min_max, stddev, sum, variance,
+    count, covariance, grouping, median, min_max, sum,
 };
 use datafusion::functions_nested::string::array_to_string;
 use datafusion::functions_window::cume_dist::cume_dist_udwf;
@@ -21,7 +21,6 @@ use datafusion_spark::function::aggregate::try_sum::SparkTrySum;
 use lazy_static::lazy_static;
 use sail_common::spec::SAIL_LIST_FIELD_NAME;
 use sail_common_datafusion::utils::items::ItemTaker;
-use sail_function::aggregate::average;
 use sail_function::aggregate::bitmap_and_agg::BitmapAndAggFunction;
 use sail_function::aggregate::bitmap_construct_agg::BitmapConstructAggFunction;
 use sail_function::aggregate::bitmap_or_agg::BitmapOrAggFunction;
@@ -39,6 +38,7 @@ use sail_function::aggregate::theta_sketch::{
     ThetaIntersectionAggFunction, ThetaSketchAggFunction, ThetaUnionAggFunction,
 };
 use sail_function::aggregate::try_avg::TryAvgFunction;
+use sail_function::aggregate::{average, variance};
 use sail_function::window::{spark_first_value_udwf, spark_last_value_udwf, spark_ntile_udwf};
 
 use crate::error::{PlanError, PlanResult};
@@ -828,10 +828,10 @@ fn list_built_in_window_functions() -> Vec<(&'static str, WinFunction)> {
         ),
         ("skewness", F::custom(skewness)),
         ("some", F::aggregate(bool_and_or::bool_or_udaf)),
-        ("std", F::aggregate(stddev::stddev_udaf)),
-        ("stddev", F::aggregate(stddev::stddev_udaf)),
-        ("stddev_pop", F::aggregate(stddev::stddev_pop_udaf)),
-        ("stddev_samp", F::aggregate(stddev::stddev_udaf)),
+        ("std", F::aggregate(variance::stddev_udaf)),
+        ("stddev", F::aggregate(variance::stddev_udaf)),
+        ("stddev_pop", F::aggregate(variance::stddev_pop_udaf)),
+        ("stddev_samp", F::aggregate(variance::stddev_udaf)),
         ("string_agg", F::custom(listagg)),
         ("sum", F::custom(spark_sum)),
         (
