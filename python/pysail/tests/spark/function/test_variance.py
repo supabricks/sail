@@ -58,3 +58,26 @@ def test_variance_sliding_window_recomputes_spark_moments(spark):
         "FROM VALUES (1,10),(2,404),(3,13),(4,814),(5,NULL) t(id,v) ORDER BY id"
     ).collect()
     assert [row[1] for row in rows] == [None, 77618.0, 51354.33333333333, 160430.3333333333, 320800.5]
+
+
+def test_variance_window_recovers_after_nonfinite_leaves(spark):
+    rows = spark.sql(
+        "SELECT id, var_samp(v) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) "
+        "FROM VALUES (1,CAST('Infinity' AS DOUBLE)),(2,10.),(3,12.),(4,CAST('NaN' AS DOUBLE)),"
+        "(5,20.),(6,24.) t(id,v) ORDER BY id"
+    ).collect()
+    assert rows[0][1] is None
+    for index in (1, 3, 4):
+        assert math.isnan(rows[index][1])
+    assert rows[2][1] == 2.0
+    assert rows[5][1] == 8.0
+
+
+def test_variance_partial_merge(spark):
+    from pyspark.sql import functions as F
+
+    rows = spark.range(1000).repartition(4).selectExpr("id % 2 AS k", "CAST(id AS DOUBLE) AS v")
+    actual = rows.groupBy("k").agg(F.var_samp("v"), F.stddev_samp("v")).orderBy("k").collect()
+    for row in actual:
+        assert row[1] == pytest.approx(83500.0, rel=1e-14)
+        assert row[2] == pytest.approx(math.sqrt(83500.0), rel=1e-14)

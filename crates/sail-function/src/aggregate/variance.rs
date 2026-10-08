@@ -55,7 +55,7 @@ impl Kind {
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
-struct SparkVariance {
+pub struct SparkVariance {
     name: &'static str,
     kind: Kind,
     signature: Signature,

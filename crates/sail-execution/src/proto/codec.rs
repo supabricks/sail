@@ -139,6 +139,7 @@ use sail_function::aggregate::theta_sketch::{
     ThetaIntersectionAggFunction, ThetaSketchAggFunction, ThetaUnionAggFunction,
 };
 use sail_function::aggregate::try_avg::TryAvgFunction;
+use sail_function::aggregate::variance::{self, SparkVariance};
 use sail_function::scalar::array::array_intersect::ArrayIntersect;
 use sail_function::scalar::array::array_position::SparkArrayPosition;
 use sail_function::scalar::array::arrays_zip::ArraysZip;
@@ -3441,6 +3442,10 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     Ok(Arc::new(AggregateUDF::from(ThetaSketchAggFunction::new())))
                 }
                 "theta_union_agg" => Ok(Arc::new(AggregateUDF::from(ThetaUnionAggFunction::new()))),
+                "var_samp" => Ok(variance::var_samp_udaf()),
+                "var_pop" => Ok(variance::var_pop_udaf()),
+                "stddev_samp" => Ok(variance::stddev_udaf()),
+                "stddev_pop" => Ok(variance::stddev_pop_udaf()),
                 "avg" => Ok(avg_udaf()),
                 "try_avg" => Ok(Arc::new(AggregateUDF::from(TryAvgFunction::new()))),
                 "try_sum" => Ok(Arc::new(AggregateUDF::from(SparkTrySum::new()))),
@@ -3555,6 +3560,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             || node.inner().is::<ThetaSketchAggFunction>()
             || node.inner().is::<ThetaUnionAggFunction>()
             || node.inner().is::<SparkAvg>()
+            || node.inner().is::<SparkVariance>()
             || node.inner().is::<TryAvgFunction>()
             || node.inner().is::<SparkTrySum>()
         {
@@ -5002,6 +5008,25 @@ mod tests {
     use datafusion::physical_expr::HigherOrderFunctionExpr;
 
     use super::*;
+
+    #[test]
+    fn test_round_trip_spark_variance() -> Result<()> {
+        let codec = RemoteExecutionCodec;
+        for udf in [
+            variance::var_samp_udaf(),
+            variance::var_pop_udaf(),
+            variance::stddev_udaf(),
+            variance::stddev_pop_udaf(),
+        ] {
+            let mut bytes = vec![];
+            codec.try_encode_udaf(&udf, &mut bytes)?;
+            assert!(!bytes.is_empty());
+            let decoded = codec.try_decode_udaf(udf.name(), &bytes)?;
+            assert!(decoded.inner().is::<SparkVariance>());
+            assert_eq!(decoded.as_ref(), udf.as_ref());
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_round_trip_spark_decimal_avg() -> Result<()> {
