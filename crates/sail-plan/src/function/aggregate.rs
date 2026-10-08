@@ -5,7 +5,7 @@ use arrow::datatypes::{DataType, Field};
 use datafusion::functions::expr_fn::coalesce;
 use datafusion::functions_aggregate::{
     approx_distinct, approx_percentile_cont, array_agg, bit_and_or_xor, bool_and_or, correlation,
-    count, covariance, first_last, grouping, min_max, percentile_cont, stddev, sum, variance,
+    count, covariance, first_last, grouping, min_max, percentile_cont, sum,
 };
 use datafusion::functions_nested::string::array_to_string;
 use datafusion_common::utils::expr::COUNT_STAR_EXPANSION;
@@ -18,7 +18,6 @@ use datafusion_spark::function::aggregate::try_sum::SparkTrySum;
 use lazy_static::lazy_static;
 use sail_common::spec::SAIL_LIST_FIELD_NAME;
 use sail_common_datafusion::utils::items::ItemTaker;
-use sail_function::aggregate::average;
 use sail_function::aggregate::bitmap_and_agg::BitmapAndAggFunction;
 use sail_function::aggregate::bitmap_construct_agg::BitmapConstructAggFunction;
 use sail_function::aggregate::bitmap_or_agg::BitmapOrAggFunction;
@@ -39,6 +38,7 @@ use sail_function::aggregate::theta_sketch::{
     ThetaIntersectionAggFunction, ThetaSketchAggFunction, ThetaUnionAggFunction,
 };
 use sail_function::aggregate::try_avg::TryAvgFunction;
+use sail_function::aggregate::{average, variance};
 use sail_function::scalar::struct_function::StructFunction;
 
 use crate::error::{PlanError, PlanResult};
@@ -1018,10 +1018,10 @@ fn list_built_in_aggregate_functions() -> Vec<(&'static str, AggFunction)> {
         ("schema_of_variant_agg", F::custom(schema_of_variant_agg)),
         ("skewness", F::custom(skewness)),
         ("some", F::default(bool_and_or::bool_or_udaf)),
-        ("std", F::default(stddev::stddev_udaf)),
-        ("stddev", F::default(stddev::stddev_udaf)),
-        ("stddev_pop", F::default(stddev::stddev_pop_udaf)),
-        ("stddev_samp", F::default(stddev::stddev_udaf)),
+        ("std", F::default(variance::stddev_udaf)),
+        ("stddev", F::default(variance::stddev_udaf)),
+        ("stddev_pop", F::default(variance::stddev_pop_udaf)),
+        ("stddev_samp", F::default(variance::stddev_udaf)),
         ("string_agg", F::custom(listagg)),
         ("sum", F::custom(spark_sum)),
         (
