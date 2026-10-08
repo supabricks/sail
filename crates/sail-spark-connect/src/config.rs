@@ -268,6 +268,14 @@ impl TryFrom<&SparkRuntimeConfig> for PlanConfig {
             output.ansi_mode = value;
         }
 
+        if let Some(value) = config
+            .get_option(SparkConfigKey::SPARK_SQL_DECIMAL_OPERATIONS_ALLOW_PRECISION_LOSS)
+            .map(|x| x.to_lowercase().parse::<bool>())
+            .transpose()?
+        {
+            output.decimal_allow_precision_loss = value;
+        }
+
         if let Some(value) = config.get_option(SparkConfigKey::SPARK_SQL_STORE_ASSIGNMENT_POLICY) {
             output.store_assignment_policy = match value.trim().to_ascii_uppercase().as_str() {
                 "ANSI" => StoreAssignmentPolicy::Ansi,

@@ -232,6 +232,7 @@ message ExtendedScalarUdf {
     SparkMapFromEntriesUdf spark_map_from_entries = 38;
     StrToMapUdf str_to_map = 39;
     SparkSequenceUdf spark_sequence = 40;
+    SparkDecimalUdf spark_decimal = 41;
   }
 }
 
@@ -1149,4 +1150,10 @@ message BarrierExecNode {
   repeated bytes preconditions = 1;
   // The main plan to execute after all preconditions are exhausted.
   bytes plan = 2;
+}
+
+message SparkDecimalUdf {
+  string operation = 1;
+  bool ansi_mode = 2;
+  bool allow_precision_loss = 3;
 }
