@@ -5,7 +5,6 @@ use datafusion::arrow::array::{Array, StringArray};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::functions_aggregate::approx_median::approx_median_udaf;
 use datafusion::functions_aggregate::approx_percentile_cont::approx_percentile_cont_udaf;
-use datafusion::functions_aggregate::average::avg_udaf;
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::{max_udaf, min_udaf};
 use datafusion::functions_aggregate::stddev::stddev_udaf;
@@ -17,6 +16,7 @@ use datafusion_expr::{
 };
 use sail_common::spec;
 use sail_common_datafusion::utils::items::ItemTaker;
+use sail_function::aggregate::average::avg_udaf;
 use sail_function::scalar::math::random::Random;
 
 use crate::error::{PlanError, PlanResult};

@@ -4,9 +4,8 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field};
 use datafusion::functions::expr_fn::coalesce;
 use datafusion::functions_aggregate::{
-    approx_distinct, approx_percentile_cont, array_agg, average, bit_and_or_xor, bool_and_or,
-    correlation, count, covariance, first_last, grouping, min_max, percentile_cont, stddev, sum,
-    variance,
+    approx_distinct, approx_percentile_cont, array_agg, bit_and_or_xor, bool_and_or, correlation,
+    count, covariance, first_last, grouping, min_max, percentile_cont, stddev, sum, variance,
 };
 use datafusion::functions_nested::string::array_to_string;
 use datafusion_common::utils::expr::COUNT_STAR_EXPANSION;
@@ -19,6 +18,7 @@ use datafusion_spark::function::aggregate::try_sum::SparkTrySum;
 use lazy_static::lazy_static;
 use sail_common::spec::SAIL_LIST_FIELD_NAME;
 use sail_common_datafusion::utils::items::ItemTaker;
+use sail_function::aggregate::average;
 use sail_function::aggregate::bitmap_and_agg::BitmapAndAggFunction;
 use sail_function::aggregate::bitmap_construct_agg::BitmapConstructAggFunction;
 use sail_function::aggregate::bitmap_or_agg::BitmapOrAggFunction;

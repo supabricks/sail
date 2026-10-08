@@ -118,6 +118,7 @@ use sail_delta_lake::schema::PhysicalPartitionColumn;
 use sail_delta_lake::spec::{
     Action, ColumnMappingMode, ColumnMetadataKey, DeltaOperation, StructType,
 };
+use sail_function::aggregate::average::{SparkAvg, avg_udaf};
 use sail_function::aggregate::bitmap_and_agg::BitmapAndAggFunction;
 use sail_function::aggregate::bitmap_construct_agg::BitmapConstructAggFunction;
 use sail_function::aggregate::bitmap_or_agg::BitmapOrAggFunction;
@@ -3412,6 +3413,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
                     Ok(Arc::new(AggregateUDF::from(ThetaSketchAggFunction::new())))
                 }
                 "theta_union_agg" => Ok(Arc::new(AggregateUDF::from(ThetaUnionAggFunction::new()))),
+                "avg" => Ok(avg_udaf()),
                 "try_avg" => Ok(Arc::new(AggregateUDF::from(TryAvgFunction::new()))),
                 "try_sum" => Ok(Arc::new(AggregateUDF::from(SparkTrySum::new()))),
                 _ => plan_err!("Could not find Aggregate Function: {name}"),
@@ -3524,6 +3526,7 @@ impl PhysicalExtensionCodec for RemoteExecutionCodec {
             || node.inner().is::<ThetaIntersectionAggFunction>()
             || node.inner().is::<ThetaSketchAggFunction>()
             || node.inner().is::<ThetaUnionAggFunction>()
+            || node.inner().is::<SparkAvg>()
             || node.inner().is::<TryAvgFunction>()
             || node.inner().is::<SparkTrySum>()
         {
@@ -4971,6 +4974,18 @@ mod tests {
     use datafusion::physical_expr::HigherOrderFunctionExpr;
 
     use super::*;
+
+    #[test]
+    fn test_round_trip_spark_decimal_avg() -> Result<()> {
+        let codec = RemoteExecutionCodec;
+        let udf = avg_udaf();
+        let mut bytes = vec![];
+        codec.try_encode_udaf(&udf, &mut bytes)?;
+        let decoded = codec.try_decode_udaf("avg", &bytes)?;
+        assert!(decoded.inner().is::<SparkAvg>());
+        assert_eq!(decoded.as_ref(), udf.as_ref());
+        Ok(())
+    }
 
     fn round_trip_udf(udf: ScalarUDF) -> Result<Arc<ScalarUDF>> {
         let codec = RemoteExecutionCodec;

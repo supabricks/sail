@@ -7667,6 +7667,7 @@ dependencies = [
  "datafusion-expr",
  "datafusion-expr-common",
  "datafusion-functions",
+ "datafusion-functions-aggregate-common",
  "datafusion-functions-nested",
  "datafusion-physical-expr",
  "datafusion-spark",
