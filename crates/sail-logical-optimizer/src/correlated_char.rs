@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::DataType;
 use datafusion::optimizer::{ApplyOrder, OptimizerConfig, OptimizerRule};
-use datafusion_common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion_common::tree_node::{Transformed, TreeNode};
 use datafusion_common::{Column, DFSchema, Result, ScalarValue};
 use datafusion_expr::{Expr, Filter, LogicalPlan, Operator, Projection};
 
@@ -20,7 +20,7 @@ pub struct MaterializeCorrelatedCharKeys;
 fn is_local_key(expr: &Expr, schema: &DFSchema) -> bool {
     // CHAR analysis marks an explicit STRING cast with metadata so that parent
     // expressions do not inherit CHAR padding. Preserve that marker on the
-    // computed key while avoiding an Alias(Cast(Column)) decorrelation barrier.
+    // predicate while avoiding an Alias(Cast(Column)) decorrelation barrier.
     if let Expr::Alias(alias) = expr {
         let string_marker = alias.metadata.as_ref().is_some_and(|metadata| {
             metadata
@@ -83,67 +83,68 @@ impl OptimizerRule for MaterializeCorrelatedCharKeys {
             .map(Expr::Column)
             .collect();
         let mut keys: Vec<(Expr, String)> = Vec::new();
-        let predicate = filter
-            .predicate
-            .clone()
-            .transform_up(|expr| {
-                let Expr::BinaryExpr(mut binary) = expr else {
-                    return Ok(Transformed::no(expr));
+        let predicate = filter.predicate.clone().transform_up(|expr| {
+            let Expr::BinaryExpr(mut binary) = expr else {
+                return Ok(Transformed::no(expr));
+            };
+            if binary.op != Operator::Eq {
+                return Ok(Transformed::no(Expr::BinaryExpr(binary)));
+            }
+            let local = if is_local_key(&binary.left, filter.input.schema())
+                && is_outer_only(&binary.right)
+            {
+                &mut binary.left
+            } else if is_local_key(&binary.right, filter.input.schema())
+                && is_outer_only(&binary.left)
+            {
+                &mut binary.right
+            } else {
+                return Ok(Transformed::no(Expr::BinaryExpr(binary)));
+            };
+            // Analysis has already used this marker to suppress CHAR
+            // padding. A predicate has no output field needing that alias;
+            // expose its safe STRING cast, which DataFusion can decorrelate
+            // directly, without introducing a metadata-bearing join key.
+            if let Expr::Alias(alias) = local.as_ref() {
+                **local = *alias.expr.clone();
+                return Ok(Transformed::yes(Expr::BinaryExpr(binary)));
+            }
+            let name = if let Some((_, name)) = keys.iter().find(|(expr, _)| expr == local.as_ref())
+            {
+                name.clone()
+            } else {
+                let name = loop {
+                    let candidate = config.alias_generator().next("__sail_char_key");
+                    if !filter
+                        .input
+                        .schema()
+                        .fields()
+                        .iter()
+                        .any(|f| f.name() == &candidate)
+                    {
+                        break candidate;
+                    }
                 };
-                if binary.op != Operator::Eq {
-                    return Ok(Transformed::no(Expr::BinaryExpr(binary)));
-                }
-                let local = if is_local_key(&binary.left, filter.input.schema())
-                    && is_outer_only(&binary.right)
-                {
-                    &mut binary.left
-                } else if is_local_key(&binary.right, filter.input.schema())
-                    && is_outer_only(&binary.left)
-                {
-                    &mut binary.right
-                } else {
-                    return Ok(Transformed::no(Expr::BinaryExpr(binary)));
-                };
-                let name =
-                    if let Some((_, name)) = keys.iter().find(|(expr, _)| expr == local.as_ref()) {
-                        name.clone()
-                    } else {
-                        let name = loop {
-                            let candidate = config.alias_generator().next("__sail_char_key");
-                            if !filter
-                                .input
-                                .schema()
-                                .fields()
-                                .iter()
-                                .any(|f| f.name() == &candidate)
-                            {
-                                break candidate;
-                            }
-                        };
-                        keys.push((local.as_ref().clone(), name.clone()));
-                        name
-                    };
-                **local = Expr::Column(Column::new_unqualified(name));
-                Ok(Transformed::yes(Expr::BinaryExpr(binary)))
-            })
-            .data()?;
-        if keys.is_empty() {
+                keys.push((local.as_ref().clone(), name.clone()));
+                name
+            };
+            **local = Expr::Column(Column::new_unqualified(name));
+            Ok(Transformed::yes(Expr::BinaryExpr(binary)))
+        })?;
+        if !predicate.transformed {
             return Ok(Transformed::no(plan));
         }
+        if keys.is_empty() {
+            return Ok(Transformed::yes(LogicalPlan::Filter(Filter::try_new(
+                predicate.data,
+                Arc::clone(&filter.input),
+            )?)));
+        }
         let mut computed = original.clone();
-        computed.extend(keys.into_iter().map(|(expr, name)| match expr {
-            // Keep the cast's metadata on the outermost alias: the physical
-            // projection only reads that alias's metadata, not nested aliases.
-            Expr::Alias(mut alias) => {
-                alias.name = name;
-                alias.relation = None;
-                Expr::Alias(alias)
-            }
-            expr => expr.alias(name),
-        }));
+        computed.extend(keys.into_iter().map(|(expr, name)| expr.alias(name)));
         let input =
             LogicalPlan::Projection(Projection::try_new(computed, Arc::clone(&filter.input))?);
-        let filtered = LogicalPlan::Filter(Filter::try_new(predicate, Arc::new(input))?);
+        let filtered = LogicalPlan::Filter(Filter::try_new(predicate.data, Arc::new(input))?);
         // Keep hidden keys out of the observable Filter schema, including raw
         // Spark Connect filter plans. Decorrelation can pull them through this
         // projection when it builds the aggregate's grouping and join keys.
@@ -233,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn string_cast_marker_is_preserved_but_fallible_casts_are_not_lifted() {
+    fn string_cast_predicate_is_exposed_but_fallible_casts_are_unchanged() {
         use std::collections::HashMap;
 
         use datafusion_expr::expr_fn::cast;
@@ -252,32 +253,14 @@ mod tests {
             assert_eq!(result.transformed, expected);
             assert_eq!(result.data.schema(), plan.schema());
             if expected {
-                let LogicalPlan::Projection(restore) = result.data else {
-                    panic!("missing restore")
+                let LogicalPlan::Filter(filter) = result.data else {
+                    panic!("cast should stay in the predicate")
                 };
-                let LogicalPlan::Filter(filter) = restore.input.as_ref() else {
-                    panic!("missing filter")
+                let Expr::BinaryExpr(binary) = filter.predicate else {
+                    panic!("missing equality")
                 };
-                let LogicalPlan::Projection(compute) = filter.input.as_ref() else {
-                    panic!("missing computed key")
-                };
-                let Expr::Alias(alias) = &compute.expr[1] else {
-                    panic!("missing key alias")
-                };
-                assert!(
-                    matches!(alias.expr.as_ref(), Expr::Cast(_)),
-                    "do not nest the metadata alias"
-                );
-                assert_eq!(
-                    alias
-                        .metadata
-                        .as_ref()
-                        .unwrap()
-                        .inner()
-                        .get("__CHAR_VARCHAR_TYPE_STRING")
-                        .unwrap(),
-                    "string"
-                );
+                assert!(matches!(binary.left.as_ref(), Expr::Cast(_)));
+                assert_eq!(filter.input.as_ref(), &input());
             }
         }
     }
