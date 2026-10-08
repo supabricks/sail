@@ -3,12 +3,13 @@
 //! Preserve operation order from Spark 4.2 CentralMomentAgg, including merges
 //! into a zero buffer. Algebraically equivalent Welford expressions have different
 //! floating-point rounding. Input and partition order can still affect results.
+use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock};
 
 use arrow::array::{Array, ArrayRef, BooleanArray, Float64Array};
 use arrow::datatypes::{DataType, Field, FieldRef, Float64Type};
 use datafusion_common::cast::as_float64_array;
-use datafusion_common::{Result, ScalarValue};
+use datafusion_common::{Result, ScalarValue, internal_err, not_impl_err};
 use datafusion_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion_expr::{
     Accumulator, AggregateUDF, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
@@ -95,6 +96,17 @@ impl AggregateUDFImpl for SparkVariance {
             distinct: args
                 .is_distinct
                 .then(|| GenericDistinctBuffer::new(DataType::Float64)),
+        }))
+    }
+    fn create_sliding_accumulator(&self, args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
+        if args.is_distinct {
+            return not_impl_err!("DISTINCT statistical windows are not supported");
+        }
+        Ok(Box::new(SlidingVariance {
+            values: VecDeque::new(),
+            moments: Moments::default(),
+            dirty: false,
+            kind: self.kind,
         }))
     }
     fn groups_accumulator_supported(&self, args: AccumulatorArgs) -> bool {
@@ -186,8 +198,65 @@ impl Accumulator for VarianceAccumulator {
     fn size(&self) -> usize {
         size_of_val(self) + self.distinct.as_ref().map_or(0, |d| d.size())
     }
-    // Like Spark's CentralMomentAgg, sliding frames recompute their moments;
-    // subtracting a previous value changes the floating-point arithmetic path.
+}
+
+// Sliding frames need their retained values: Spark recalculates each frame,
+// whereas inverse moment updates accumulate different rounding and cannot
+// recover when a NaN or infinity leaves the frame. This buffer is confined to
+// bounded windows; ordinary scalar/grouped aggregation keeps constant state.
+#[derive(Debug)]
+struct SlidingVariance {
+    values: VecDeque<f64>,
+    moments: Moments,
+    dirty: bool,
+    kind: Kind,
+}
+impl SlidingVariance {
+    fn refresh(&mut self) {
+        if self.dirty {
+            self.moments = Moments::default();
+            for value in &self.values {
+                self.moments.update(*value);
+            }
+            self.dirty = false;
+        }
+    }
+}
+impl Accumulator for SlidingVariance {
+    fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        for value in as_float64_array(&values[0])?.iter().flatten() {
+            self.values.push_back(value);
+            if !self.dirty {
+                self.moments.update(value);
+            }
+        }
+        Ok(())
+    }
+    fn retract_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        for value in as_float64_array(&values[0])?.iter().flatten() {
+            if self.values.pop_front().map(f64::to_bits) != Some(value.to_bits()) {
+                return internal_err!("Sliding variance retraction differs from retained frame");
+            }
+            self.dirty = true;
+        }
+        Ok(())
+    }
+    fn supports_retract_batch(&self) -> bool {
+        true
+    }
+    fn evaluate(&mut self) -> Result<ScalarValue> {
+        self.refresh();
+        Ok(ScalarValue::Float64(self.kind.evaluate(self.moments)))
+    }
+    fn state(&mut self) -> Result<Vec<ScalarValue>> {
+        not_impl_err!("Sliding variance is not a partial aggregate")
+    }
+    fn merge_batch(&mut self, _: &[ArrayRef]) -> Result<()> {
+        not_impl_err!("Sliding variance is not a partial aggregate")
+    }
+    fn size(&self) -> usize {
+        size_of_val(self) + self.values.capacity() * size_of::<f64>()
+    }
 }
 
 #[derive(Debug)]
@@ -407,6 +476,43 @@ mod tests {
             result.merge_batch(&states)?;
         }
         assert_eq!(result.evaluate()?, ScalarValue::Float64(Some(1.)));
+        Ok(())
+    }
+    #[test]
+    fn sliding_frame_recomputes_after_retraction() -> Result<()> {
+        let mut a = SlidingVariance {
+            values: VecDeque::new(),
+            moments: Moments::default(),
+            dirty: false,
+            kind: kind(),
+        };
+        a.update_batch(&[array(vec![
+            Some(10.),
+            Some(404.),
+            Some(13.),
+            Some(814.),
+            None,
+        ])])?;
+        a.retract_batch(&[array(vec![Some(10.)])])?;
+        assert_eq!(a.evaluate()?, ScalarValue::Float64(Some(160430.3333333333)));
+        a.retract_batch(&[array(vec![Some(404.), Some(13.), Some(814.), None])])?;
+        assert_eq!(a.evaluate()?, ScalarValue::Float64(None));
+        Ok(())
+    }
+    #[test]
+    fn sliding_frame_recovers_when_nonfinite_values_leave() -> Result<()> {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut a = SlidingVariance {
+                values: VecDeque::new(),
+                moments: Moments::default(),
+                dirty: false,
+                kind: kind(),
+            };
+            a.update_batch(&[array(vec![Some(value), None, Some(1.), Some(2.), Some(3.)])])?;
+            assert!(matches!(a.evaluate()?,ScalarValue::Float64(Some(x)) if x.is_nan()));
+            a.retract_batch(&[array(vec![Some(value), None])])?;
+            assert_eq!(a.evaluate()?, ScalarValue::Float64(Some(1.)));
+        }
         Ok(())
     }
 }
