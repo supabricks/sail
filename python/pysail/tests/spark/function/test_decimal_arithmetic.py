@@ -142,3 +142,26 @@ def test_decimal_wide_array_intermediate(spark):
     )
     assert frame.schema["a"].dataType == DecimalType(38, 37)
     assert [r.a for r in frame.collect()] == [Decimal("1.0000000000000000000000000000000000000")] * 2
+
+
+@pytest.mark.parametrize(
+    "expression,precision,scale,expected",
+    [
+        ("1.3*avg(v)", 14, 7, ["2.6000000", "6.5000000", None]),
+        ("avg(v)*1.2", 14, 7, ["2.4000000", "6.0000000", None]),
+        ("1.3+avg(v)", 12, 6, ["3.300000", "6.300000", None]),
+        ("avg(v)-1.3", 12, 6, ["0.700000", "3.700000", None]),
+        ("avg(v)/1.3", 15, 9, ["1.538461538", "3.846153846", None]),
+    ],
+)
+def test_decimal_correlated_aggregate_empty_input(spark, expression, precision, scale, expected):
+    # The optimizer must evaluate the correlated aggregate's empty-input value.
+    # In DataFusion this temporarily replaces AVG with an untyped NULL (#199).
+    frame = spark.sql(
+        "WITH t AS (SELECT k,CAST(v AS DECIMAL(7,2)) v FROM VALUES "
+        "(1,1.00),(1,3.00),(2,5.00) t(k,v)) "
+        f"SELECT i.k,(SELECT {expression} FROM t WHERE t.k=i.k) a "
+        "FROM VALUES (1),(2),(3) i(k) ORDER BY i.k"
+    )
+    assert frame.schema["a"].dataType == DecimalType(precision, scale)
+    assert [r.a for r in frame.collect()] == [None if v is None else Decimal(v) for v in expected]

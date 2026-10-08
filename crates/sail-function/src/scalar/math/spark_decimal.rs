@@ -37,8 +37,23 @@ impl SparkDecimal {
         }
     }
 
+    fn operand_types(types: &[DataType]) -> Result<Vec<DataType>> {
+        // Decorrelation evaluates aggregate expressions on an empty input by
+        // replacing aggregates with untyped NULL. Coercion must accept that
+        // intermediate expression just as it accepts an SQL NULL literal.
+        let types = match types {
+            [DataType::Null, DataType::Null] => vec![DataType::Decimal128(1, 0); 2],
+            [DataType::Null, right @ DataType::Decimal128(_, _)] => vec![right.clone(); 2],
+            [left @ DataType::Decimal128(_, _), DataType::Null] => vec![left.clone(); 2],
+            [DataType::Decimal128(_, _), DataType::Decimal128(_, _)] => types.to_vec(),
+            _ => return plan_err!("decimal arithmetic requires decimal operands: {types:?}"),
+        };
+        Ok(types)
+    }
+
     pub fn result_type(&self, types: &[DataType]) -> Result<DataType> {
-        let [DataType::Decimal128(p1, s1), DataType::Decimal128(p2, s2)] = types else {
+        let types = Self::operand_types(types)?;
+        let [DataType::Decimal128(p1, s1), DataType::Decimal128(p2, s2)] = types.as_slice() else {
             return plan_err!("decimal arithmetic requires two Decimal128 operands: {types:?}");
         };
         let (p1, s1, p2, s2) = (
@@ -165,8 +180,7 @@ impl ScalarUDFImpl for SparkDecimal {
         self.result_type(types)
     }
     fn coerce_types(&self, types: &[DataType]) -> Result<Vec<DataType>> {
-        self.result_type(types)?;
-        Ok(types.to_vec())
+        Self::operand_types(types)
     }
     fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef> {
         let types = args
@@ -181,7 +195,8 @@ impl ScalarUDFImpl for SparkDecimal {
         )))
     }
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let types = args.args.iter().map(|a| a.data_type()).collect::<Vec<_>>();
+        let types =
+            Self::operand_types(&args.args.iter().map(|a| a.data_type()).collect::<Vec<_>>())?;
         let DataType::Decimal128(precision, scale) = self.result_type(&types)? else {
             unreachable!()
         };
@@ -193,7 +208,13 @@ impl ScalarUDFImpl for SparkDecimal {
             .args
             .iter()
             .all(|a| matches!(a, ColumnarValue::Scalar(_)));
-        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
+        let coerced = args
+            .args
+            .iter()
+            .zip(&types)
+            .map(|(value, data_type)| value.cast_to(data_type, None))
+            .collect::<Result<Vec<_>>>()?;
+        let arrays = ColumnarValue::values_to_arrays(&coerced)?;
         let left = arrays[0].as_primitive::<Decimal128Type>();
         let right = arrays[1].as_primitive::<Decimal128Type>();
         let limit_i128 = 10_i128.pow(u32::from(precision));
@@ -296,6 +317,22 @@ mod tests {
                 .result_type(&[DataType::Decimal128(38, 18), DataType::Decimal128(38, 18)])?,
             DataType::Decimal128(38, 18)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn optimizer_null_operands() -> Result<()> {
+        let udf = SparkDecimal::new(DecimalOp::Multiply, true, true);
+        for types in [
+            [DataType::Null, DataType::Decimal128(2, 1)],
+            [DataType::Decimal128(2, 1), DataType::Null],
+        ] {
+            assert_eq!(
+                udf.coerce_types(&types)?,
+                vec![DataType::Decimal128(2, 1); 2]
+            );
+            assert_eq!(udf.result_type(&types)?, DataType::Decimal128(5, 2));
+        }
         Ok(())
     }
 
